@@ -1,0 +1,83 @@
+name: Build NAVID APK
+
+on:
+  push:
+    paths:
+      - "navid-project-0.16.0.zip"
+      - ".github/workflows/build-apk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Unzip project
+        run: unzip -q navid-project-0.16.0.zip -d work
+
+      - name: Unit tests (report only, does not block the APK)
+        working-directory: work/navid
+        continue-on-error: true
+        run: gradle testDebugUnitTest --stacktrace --no-daemon
+
+      - name: Build debug APK
+        working-directory: work/navid
+        run: gradle assembleDebug --stacktrace --no-daemon
+
+      - name: Copy APK
+        run: cp work/navid/app/build/outputs/apk/debug/app-debug.apk NAVID-debug.apk
+
+      - name: Build full experimental APK (LiteRT-LM + OCR)
+        continue-on-error: true
+        working-directory: work/navid
+        run: |
+          gradle assembleDebug -PlocalModel=true -Pocr=true --stacktrace --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk ../../NAVID-debug-full.apk
+
+      - name: Fallback - local model only
+        if: hashFiles('NAVID-debug-full.apk') == ''
+        continue-on-error: true
+        working-directory: work/navid
+        run: |
+          gradle assembleDebug -PlocalModel=true --stacktrace --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk ../../NAVID-debug-local.apk
+
+      - name: Fallback - OCR only
+        if: hashFiles('NAVID-debug-full.apk') == ''
+        continue-on-error: true
+        working-directory: work/navid
+        run: |
+          gradle assembleDebug -Pocr=true --stacktrace --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk ../../NAVID-debug-ocr.apk
+
+      - name: Upload APKs as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NAVID-debug-apk
+          path: |
+            NAVID-debug*.apk
+          if-no-files-found: warn
+
+      - name: Publish APK as pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "build-${{ github.run_number }}" NAVID-debug.apk $(ls NAVID-debug-*.apk 2>/dev/null) \
+            --target "${{ github.sha }}" \
+            --prerelease \
+            --title "NAVID build ${{ github.run_number }}" \
+            --notes "Debug APK for S20 FE."
